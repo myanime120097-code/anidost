@@ -16,7 +16,6 @@ function escapeHtml(str) {
 function posterOrPlaceholder(poster) {
   return poster || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="300"%3E%3Crect fill="%231A181C" width="200" height="300"/%3E%3Ctext x="100" y="150" fill="%23EDE7DA" opacity="0.3" text-anchor="middle"%3ENo Poster%3C/text%3E%3C/svg%3E';
 }
-/* Episode display — ONLY E00, no Season */
 function getEpisodeDisplay(anime) {
   if (!anime || anime.type !== 'Series') return '';
   var episodes = anime.episodes_list || [];
@@ -26,62 +25,92 @@ function getEpisodeDisplay(anime) {
     });
   }
   if (!episodes.length) return '';
-  var count = episodes.length;
-  return 'E' + String(count).padStart(2, '0');
+  return 'E' + String(episodes.length).padStart(2, '0');
 }
 
 /* ============================================================
-   MAP BUNDLE ANIME  →  normalised shape used by UI
+   MAP ANIME (from data.js — already full object)
 ============================================================ */
 function mapBundleAnime(v) {
   if (!v || !v.title) return null;
-
   var episodesList = Array.isArray(v.episodes_list) ? v.episodes_list : [];
 
-  var seasons = [];
-  if (episodesList.length > 0) {
-    seasons.push({
-      name: "Season 1",
-      episodes: episodesList.map(function (ep) {
-        return {
-          episodeNumber: ep.number,
-          linkId: ep.linkId || "",
-          duration: ep.duration || "24",
-          created_at: ep.created_at || ""
-        };
-      })
-    });
-  } else if (Array.isArray(v.seasons)) {
-    seasons = v.seasons;
-  }
-
-  // Extract the latest episode created_at for sorting
   var latestEpisodeTime = 0;
-  if (episodesList.length > 0) {
-    episodesList.forEach(function(ep) {
-      if (ep.created_at) {
-        var t = new Date(ep.created_at).getTime();
-        if (!isNaN(t) && t > latestEpisodeTime) latestEpisodeTime = t;
-      }
-    });
-  }
+  episodesList.forEach(function(ep) {
+    if (ep.created_at) {
+      var t = new Date(ep.created_at).getTime();
+      if (!isNaN(t) && t > latestEpisodeTime) latestEpisodeTime = t;
+    }
+  });
 
   return {
     id:     v.slug || v.id || '',
+    slug:   v.slug || v.id || '',
     title:  v.title || 'Untitled',
     poster: v.poster_2_3 || v.poster || v.banner || '',
     banner: v.banner || v.poster_2_3 || '',
     type:   v.type || (v.format && String(v.format).toUpperCase() === 'MOVIE' ? 'Movie' : 'Series'),
+    format: v.format || '',
     status: v.status || '',
     year:   v.year || '',
     rating: v.rating || '',
     genres: v.genres || '',
-    seasons: seasons,
+    synopsis: v.synopsis || '',
+    source: v.source || '',
+    studios: v.studios || '',
+    total_episodes: v.total_episodes || '',
+    episode_duration: v.episode_duration || '',
+    trailer_embed: v.trailer_embed || '',
+    characters: v.characters || [],
     episodes_list: episodesList,
-    uploadTime: v.upload_time || v.uploadTime || 0,
-    editTime:   v.editTime || 0,
+    uploadTime: v.created_at_ms || 0,
+    editTime:   v.updated_at_ms || 0,
+    created_at_ms: v.created_at_ms || 0,
+    updated_at_ms: v.updated_at_ms || 0,
     latestEpisodeTime: latestEpisodeTime
   };
+}
+
+/* ============================================================
+   WAIT FOR DATA.JS — CRITICAL FIX
+============================================================ */
+function whenAnimeDataReady(callback) {
+  function done() {
+    var raw = [];
+    if (window.AnimeData && typeof window.AnimeData.all === "function") {
+      raw = window.AnimeData.all();
+    } else if (window.ANIME_DATA) {
+      raw = Object.values(window.ANIME_DATA);
+    }
+    var list = raw.map(mapBundleAnime).filter(Boolean);
+    list.sort(function (a, b) {
+      return (b.updated_at_ms || b.created_at_ms || 0) - (a.updated_at_ms || a.created_at_ms || 0);
+    });
+    callback(list);
+  }
+
+  // Already loaded?
+  if (window.ANIME_DATA && Object.keys(window.ANIME_DATA).length > 0) {
+    done();
+    return;
+  }
+
+  var fired = false;
+  var onReady = function () {
+    if (fired) return;
+    fired = true;
+    done();
+  };
+
+  window.addEventListener("anime-data-ready", onReady, { once: true });
+
+  // Timeout safety
+  setTimeout(function () {
+    if (fired) return;
+    fired = true;
+    console.warn("[home.js] timeout — data.js never fired anime-data-ready");
+    done();
+  }, 15000);
 }
 
 /* ============================================================
@@ -196,18 +225,15 @@ function renderTrack(trackEl, items, limit) {
    RENDER ROWS
 ============================================================ */
 function sortByLatestEpisode(a, b) {
-  // Sort by latest episode created_at, fallback to upload/edit time
   var ta = a.latestEpisodeTime || Math.max(a.uploadTime || 0, a.editTime || 0);
   var tb = b.latestEpisodeTime || Math.max(b.uploadTime || 0, b.editTime || 0);
   return tb - ta;
 }
 function renderAllRows() {
-  // Sort all anime by latest episode created_at
   var recent = allAnime.slice().sort(sortByLatestEpisode);
   var series = recent.filter(function(a){ return a.type === 'Series'; });
   var movies = recent.filter(function(a){ return a.type === 'Movie'; });
 
-  // 15 items per section
   var sCount = renderTrack(document.getElementById('seriesTrack'), series, 15);
   document.getElementById('seriesRecentRow').style.display = sCount ? '' : 'none';
 
@@ -228,7 +254,6 @@ function renderHistoryRows() {
       var sorted = history.slice().sort(function(a,b){ return (b.timestamp||0) - (a.timestamp||0); });
       histTrack.innerHTML = '';
       var histCount = 0;
-      // 15 items for history
       for (var i = 0; i < sorted.length && histCount < 15; i++) {
         var anime = findAnime(sorted[i].animeId);
         if (!anime) continue;
@@ -247,7 +272,6 @@ function renderSavedRow() {
   var savedIds = readSaved();
   savedTrack.innerHTML = '';
   var count = 0;
-  // 15 items for saved (most recent saves first)
   for (var i = 0; i < savedIds.length && count < 15; i++) {
     var anime = findAnime(savedIds[i]);
     if (!anime) continue;
@@ -303,7 +327,7 @@ function renderFilterCounts() {
 }
 
 /* ============================================================
-   HERO SLIDER — banner bg + genre/year/rating + clickable genres
+   HERO SLIDER
 ============================================================ */
 function pickFeatured(list, count) {
   var copy = list.slice();
@@ -324,7 +348,7 @@ function renderHero() {
       '<div class="empty-state" style="padding:60px 20px;">' +
         '<span class="icon">—</span>' +
         '<p style="font-size:1rem;font-weight:600;color:rgba(237,231,218,0.5);margin-bottom:8px;">No anime found</p>' +
-        '<p style="font-size:0.875rem;color:rgba(237,231,218,0.25);">Run admin.php → Save All</p>' +
+        '<p style="font-size:0.875rem;color:rgba(237,231,218,0.25);">Add anime from admin panel</p>' +
       '</div>';
     return;
   }
@@ -674,7 +698,6 @@ document.addEventListener('click', function(e) {
   if (id) recordHistoryClick(id);
 }, true);
 
-/* Clear history */
 var clearHistoryBtn = document.getElementById('clearHistoryBtn');
 if (clearHistoryBtn) {
   clearHistoryBtn.addEventListener('click', function(e) {
@@ -687,46 +710,31 @@ if (clearHistoryBtn) {
 }
 
 /* ============================================================
-   LOAD ANIME FROM BUNDLE (anime/anime.js)
-============================================================ */
-function loadAnime() {
-  return new Promise(function (resolve) {
-    if (typeof window.ANIME_READY === 'undefined') {
-      console.warn('[index] ANIME_READY missing — did you include anime/anime.js?');
-      resolve([]);
-      return;
-    }
-    window.ANIME_READY.then(function (bundle) {
-      var list = (bundle.list || []).map(mapBundleAnime).filter(Boolean);
-      list.sort(function (a, b) {
-        return (b.editTime || b.uploadTime || 0) - (a.editTime || a.uploadTime || 0);
-      });
-      resolve(list);
-    }).catch(function (err) {
-      console.error('[index] ANIME_READY failed:', err);
-      resolve([]);
-    });
-  });
-}
-
-/* ============================================================
    BOOT
 ============================================================ */
-(async function boot() {
+whenAnimeDataReady(function (list) {
   try {
-    allAnime = await loadAnime();
-    featuredAnime = pickFeatured(allAnime, 10);
+    allAnime = list;
 
     if (allAnime.length === 0) {
       var es = document.getElementById('emptyState');
       if (es) es.style.display = '';
+      // still hide loading
+      var s = document.getElementById('loadingScreen');
+      if (s) {
+        s.classList.add('fade');
+        setTimeout(function () { s.hidden = true; }, 550);
+      }
+      return;
     }
+
+    featuredAnime = pickFeatured(allAnime, 10);
 
     renderHero();
     renderAllRows();
     renderFilterCounts();
   } catch (err) {
-    console.error('Boot error:', err);
+    console.error('[home.js] render error:', err);
     var errEl = document.getElementById('loadError');
     if (errEl) {
       errEl.style.display = 'block';
@@ -739,4 +747,4 @@ function loadAnime() {
       setTimeout(function () { s.hidden = true; }, 550);
     }
   }
-})();
+});
